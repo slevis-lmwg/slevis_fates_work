@@ -1006,7 +1006,7 @@ data:
  fates_seed_germination_timescale = 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 
     0.5, 0.5, 0.5, 0.5 ;
 
- fates_seed_suppl = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ;
+ fates_seed_suppl = 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1 ;
 
  fates_senleaf_long_fdrought = 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ;
 
