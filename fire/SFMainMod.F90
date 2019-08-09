@@ -88,6 +88,7 @@
 
   type(shr_strdata_type) :: sdat_lnfm   ! Lightning input data stream
 
+  character(len=CL)  :: stream_fldFileName_lightng ! lightning stream filename to read
   character(len=*), parameter, private :: sourcefile = &
        __FILE__
 
@@ -151,7 +152,6 @@ contains
     type(bounds_type), intent(in) :: bounds
     !
     ! !LOCAL VARIABLES:
-    integer  :: g
     integer  :: begg, endg
     integer  :: nstep
     integer  :: ier
@@ -190,7 +190,6 @@ contains
     type(bounds_type), intent(in) :: bounds
     !
     ! !LOCAL VARIABLES:
-    integer :: g
     integer :: dtime                 ! timestep size [seconds]
     integer :: nstep                 ! timestep number
     integer :: ier                   ! error status
@@ -297,7 +296,6 @@ contains
   integer            :: nu_nml                     ! unit for namelist file
   integer            :: nml_error                  ! namelist i/o error flag
   type(mct_ggrid)    :: dom_clm                    ! domain information
-  character(len=CL)  :: stream_fldFileName_lightng ! lightning stream filename to read
   character(len=CL)  :: lightngmapalgo = 'bilinear'! Mapping alogrithm
   character(*), parameter :: subName = "('lnfmdyn_init')"
   character(*), parameter :: F00 = "('(lnfmdyn_init) ',4a)"
@@ -346,42 +344,44 @@ contains
       write(iulog,*) ' '
    endif
 
-   call clm_domain_mct (bounds, dom_clm)
+   if (index(stream_fldFileName_lightng, 'nofile') == 0) then
+      call clm_domain_mct (bounds, dom_clm)
 
-   call shr_strdata_create(sdat_lnfm,name="clmlnfm",  &
-        pio_subsystem=pio_subsystem,                  &
-        pio_iotype=shr_pio_getiotype(inst_name),      &
-        mpicom=mpicom, compid=comp_id,                &
-        gsmap=gsmap_lnd_gdc2glo, ggrid=dom_clm,       &
-        nxg=ldomain%ni, nyg=ldomain%nj,               &
-        yearFirst=stream_year_first_lightng,          &
-        yearLast=stream_year_last_lightng,            &
-        yearAlign=model_year_align_lightng,           &
-        offset=0,                                     &
-        domFilePath='',                               &
-        domFileName=trim(stream_fldFileName_lightng), &
-        domTvarName='time',                           &
-        domXvarName='lon' ,                           &
-        domYvarName='lat' ,                           &
-        domAreaName='area',                           &
-        domMaskName='mask',                           &
-        filePath='',                                  &
-        filename=(/trim(stream_fldFileName_lightng)/),&
-        fldListFile='lnfm',                           &
-        fldListModel='lnfm',                          &
-        fillalgo='none',                              &
-        mapalgo=lightngmapalgo,                       &
-        calendar=get_calendar(),                      &
-        taxmode='cycle'                            )
+      call shr_strdata_create(sdat_lnfm,name="clmlnfm",  &
+           pio_subsystem=pio_subsystem,                  &
+           pio_iotype=shr_pio_getiotype(inst_name),      &
+           mpicom=mpicom, compid=comp_id,                &
+           gsmap=gsmap_lnd_gdc2glo, ggrid=dom_clm,       &
+           nxg=ldomain%ni, nyg=ldomain%nj,               &
+           yearFirst=stream_year_first_lightng,          &
+           yearLast=stream_year_last_lightng,            &
+           yearAlign=model_year_align_lightng,           &
+           offset=0,                                     &
+           domFilePath='',                               &
+           domFileName=trim(stream_fldFileName_lightng), &
+           domTvarName='time',                           &
+           domXvarName='lon' ,                           &
+           domYvarName='lat' ,                           &
+           domAreaName='area',                           &
+           domMaskName='mask',                           &
+           filePath='',                                  &
+           filename=(/trim(stream_fldFileName_lightng)/),&
+           fldListFile='lnfm',                           &
+           fldListModel='lnfm',                          &
+           fillalgo='none',                              &
+           mapalgo=lightngmapalgo,                       &
+           calendar=get_calendar(),                      &
+           taxmode='cycle'                            )
 
-   if (masterproc) then
-      call shr_strdata_print(sdat_lnfm,'Lightning data')
-   endif
+      if (masterproc) then
+         call shr_strdata_print(sdat_lnfm,'Lightning data')
+      endif
 
-   ! Add history fields
-   call hist_addfld1d (fname='LNFM', units='counts/km^2/hr',  &
-         avgflag='A', long_name='Lightning frequency',        &
-         ptr_lnd=forc_lnfm, default='inactive')
+      ! Add history fields
+      call hist_addfld1d (fname='LNFM', units='counts/km^2/hr',  &
+            avgflag='A', long_name='Lightning frequency',        &
+            ptr_lnd=forc_lnfm, default='inactive')
+   end if
 
   end subroutine lnfm_init
 
@@ -409,13 +409,15 @@ contains
    call get_curr_date(year, mon, day, sec)
    mcdate = year*10000 + mon*100 + day
 
-   call shr_strdata_advance(sdat_lnfm, mcdate, sec, mpicom, 'lnfmdyn')
+   if (index(stream_fldFileName_lightng, 'nofile') == 0) then
+      call shr_strdata_advance(sdat_lnfm, mcdate, sec, mpicom, 'lnfmdyn')
 
-   ig = 0
-   do g = bounds%begg,bounds%endg
-      ig = ig+1
-      forc_lnfm(g) = sdat_lnfm%avs(1)%rAttr(1,ig)
-   end do
+      ig = 0
+      do g = bounds%begg,bounds%endg
+         ig = ig+1
+         forc_lnfm(g) = sdat_lnfm%avs(1)%rAttr(1,ig)
+      end do
+   end if
 
   end subroutine lnfm_interp
 
@@ -1032,7 +1034,12 @@ contains
 
           ! Equation 7 from Venevsky et al GCB 2002 (modification of equation 8 in Thonicke et al. 2010) 
           ! FDI 0.1 = low, 0.3 moderate, 0.75 high, and 1 = extreme ignition potential for alpha 0.000337
-          currentSite%FDI  = 1.0_r8 - exp(-SF_val_fdi_alpha*currentSite%acc_NI)  
+          if (index(stream_fldFileName_lightng, 'ignition') > 0) then
+             currentSite%FDI = 1._r8  ! READING "SUCCESSFUL IGNITION" DATA
+          else
+             currentSite%FDI  = 1.0_r8 - exp(-SF_val_fdi_alpha*currentSite%acc_NI)
+          end if
+
           ! Equation 14 in Thonicke et al. 2010
           ! fire duration in minutes
 
@@ -1120,9 +1127,11 @@ contains
              ! NF = number of lighting strikes per day per km2
              ! ED_val_nignitions is from the params file
              ! lightning is the daily avg from a lightning dataset
-!            currentPatch%NF = ED_val_nignitions * currentPatch%area/area /365
-             currentPatch%NF = bc_in%lightning24 * 24._r8  ! #/km2/hr to #/km2/day
-!            currentSite%FDI = 1._r8  ! IF READING SUCCESSFUL IGNITION DATA
+             if (index(stream_fldFileName_lightng, 'nofile') > 0) then
+                currentPatch%NF = ED_val_nignitions * currentPatch%area/area /365
+             else
+                currentPatch%NF = bc_in%lightning24 * 24._r8  ! #/km2/hr to #/km2/day
+             end if
 
              ! If there are 15  lightening strickes per year, per km2. (approx from NASA product) 
              ! then there are 15/365 s/km2 each day. 
