@@ -208,14 +208,14 @@ contains
        endif
 
        ! Fire Disturbance Rate
-       ! Fudge - fires can't burn the whole patch, as this causes /0 errors.
-       ! This is accumulating the daily fires over the whole 30 day patch generation phase.  
-       currentPatch%disturbance_rates(dtype_ifire) = &
-             min(0.99_r8,currentPatch%disturbance_rates(dtype_ifire) + currentPatch%frac_burnt)
+       ! Fires can't burn the whole patch, as this causes /0 errors. 
+       currentPatch%disturbance_rates(dtype_ifire) = currentPatch%frac_burnt
 
-       if (currentPatch%disturbance_rates(dtype_ifire) > 0.98_r8)then
+       if (debug) then
+          if (currentPatch%disturbance_rates(dtype_ifire) > 0.98_r8)then
           write(fates_log(),*) 'very high fire areas', &
-                currentPatch%disturbance_rates(dtype_ifire),currentPatch%frac_burnt
+               currentPatch%disturbance_rates(dtype_ifire),currentPatch%frac_burnt
+          endif
        endif
 
 
@@ -1591,6 +1591,7 @@ contains
     currentPatch%root_litter_out(:) = 0.0_r8 ! As a newly created patch with no age, no frag or decomp has happened yet
 
     ! FIRE
+    currentPatch%litter_moisture(:)         = 0.0_r8 ! litter moisture
     currentPatch%fuel_eff_moist             = 0.0_r8 ! average fuel moisture content of the ground fuel 
     ! (incl. live grasses. omits 1000hr fuels)
     currentPatch%livegrass                  = 0.0_r8 ! total ag grass biomass in patch. 1=c3 grass, 2=c4 grass. gc/m2
@@ -1612,10 +1613,8 @@ contains
     currentPatch%fire                       = 999    ! sr decide_fire.1=fire hot enough to proceed. 0=stop everything- no fires today
     currentPatch%fd                         = 0.0_r8 ! fire duration (mins)
     currentPatch%ros_back                   = 0.0_r8 ! backward ros (m/min)
-    currentPatch%ab                         = 0.0_r8 ! area burnt daily m2
-    currentPatch%nf                         = 0.0_r8 ! number of fires initiated daily 
     currentPatch%sh                         = 0.0_r8 ! average scorch height for the patch(m)
-    currentPatch%frac_burnt                 = 0.0_r8 ! fraction burnt in each timestep. 
+    currentPatch%frac_burnt                 = 0.0_r8 ! fraction burnt daily  
     currentPatch%burnt_frac_litter(:)       = 0.0_r8 
     currentPatch%btran_ft(:)                = 0.0_r8
 
@@ -1687,13 +1686,13 @@ contains
     do i_disttype = 1, n_anthro_disturbance_categories
 
        !---------------------------------------------------------------------!
-       !  We only really care about fusing patches if nopatches > 1           !
+       !  We only really care about fusing patches if nopatches > 1          !
        !---------------------------------------------------------------------!
 
        iterate = 1
 
        !---------------------------------------------------------------------!
-       !  Keep doing this until nopatches >= maxPatchesPerSite                         !
+       !  Keep doing this until nopatches <= maxPatchesPerSite               !
        !---------------------------------------------------------------------!
 
        do while(iterate == 1)
@@ -1706,9 +1705,9 @@ contains
              currentPatch => currentPatch%older
           enddo
 
-          !---------------------------------------------------------------------!
+          !-------------------------------------------------------------------------------!
           ! Loop round current & target (currentPatch,tpp) patches to assess combinations !
-          !---------------------------------------------------------------------!   
+          !-------------------------------------------------------------------------------!   
           currentPatch => currentSite%youngest_patch
           do while(associated(currentPatch))      
              tpp => currentSite%youngest_patch
@@ -1719,8 +1718,10 @@ contains
                 endif
 
                 if(associated(tpp).and.associated(currentPatch))then
-
-                   ! only fuse patches whose anthropogenic disturbance categroy matches taht of the outer loop that we are in
+                   !--------------------------------------------------------------------!
+                   ! only fuse patches whose anthropogenic disturbance category matches !
+                   ! that of the outer loop that we are in                              !
+                   !--------------------------------------------------------------------!
                    if ( tpp%anthro_disturbance_label .eq. i_disttype .and. &
                         currentPatch%anthro_disturbance_label .eq. i_disttype) then
 
@@ -1766,15 +1767,16 @@ contains
                                   do z = 1,n_dbh_bins      ! loop over hgt bins 
 
                                      !----------------------------------
-                                     !is there biomass in this category?
+                                     ! is there biomass in this category?
                                      !----------------------------------
 
                                      if(currentPatch%pft_agb_profile(ft,z)  > 0.0_r8 .or.  &
                                           tpp%pft_agb_profile(ft,z) > 0.0_r8)then 
 
-                                        !-------------------------------------------------------------------------------------
-                                        ! what is the relative difference in biomass i nthis category between the two patches?
-                                        !-------------------------------------------------------------------------------------
+                                        !---------------------------------------------------------------------!
+                                        ! what is the relative difference in biomass in this category between
+                                        ! the two patches?
+                                        !---------------------------------------------------------------------!
 
                                         norm = abs(currentPatch%pft_agb_profile(ft,z) - &
                                              tpp%pft_agb_profile(ft,z))/(0.5_r8 * &
@@ -1801,12 +1803,31 @@ contains
                          ! or both are older than forced fusion age                                !
                          !-------------------------------------------------------------------------!
 
-                         if(fuse_flag  ==  1)then 
+                         if(fuse_flag  ==  1)then
+                            
+                            !-----------------------!
+                            ! fuse the two patches  !
+                            !-----------------------!
+                            
                             tmpptr => currentPatch%older       
                             call fuse_2_patches(csite, currentPatch, tpp)
                             call fuse_cohorts(csite,tpp, bc_in)
                             call sort_cohorts(tpp)
                             currentPatch => tmpptr
+
+                            !------------------------------------------------------------------------!
+                            ! since we've just fused two patches, but are still in the midst of      !
+                            ! a patch x patch loop, reset the patch fusion tolerance to the starting !
+                            ! value so that any subsequent fusions in this loop are done with that   !
+                            ! value. otherwise we can end up in a situation where we've loosened the !
+                            ! fusion tolerance to get nopatches <= maxPatchesPerSite, but then,      !
+                            ! having accomplished that, we continue through all the patch x patch    !
+                            ! combinations and then all the patches get fused, ending up with        !
+                            ! nopatches << maxPatchesPerSite and losing all heterogeneity.           !
+                            !------------------------------------------------------------------------!
+
+                            profiletol = ED_val_patch_fusion_tol
+                            
                          else
                             ! write(fates_log(),*) 'patches not fused'
                          endif
@@ -1930,8 +1951,6 @@ contains
     rp%fi                   = (dp%fi*dp%area + rp%fi*rp%area) * inv_sum_area
     rp%fd                   = (dp%fd*dp%area + rp%fd*rp%area) * inv_sum_area
     rp%ros_back             = (dp%ros_back*dp%area + rp%ros_back*rp%area) * inv_sum_area
-    rp%ab                   = (dp%ab*dp%area + rp%ab*rp%area) * inv_sum_area
-    rp%nf                   = (dp%nf*dp%area + rp%nf*rp%area) * inv_sum_area
     rp%sh                   = (dp%sh*dp%area + rp%sh*rp%area) * inv_sum_area
     rp%frac_burnt           = (dp%frac_burnt*dp%area + rp%frac_burnt*rp%area) * inv_sum_area
     rp%burnt_frac_litter(:) = (dp%burnt_frac_litter(:)*dp%area + rp%burnt_frac_litter(:)*rp%area) * inv_sum_area

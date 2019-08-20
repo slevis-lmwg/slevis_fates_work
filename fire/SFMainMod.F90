@@ -438,7 +438,6 @@ contains
     currentPatch => currentSite%youngest_patch
     do while(associated(currentPatch))
        currentPatch%frac_burnt = 0.0_r8
-       currentPatch%AB         = 0.0_r8
        currentPatch%fire       = 0
        currentPatch => currentPatch%older
     enddo
@@ -1070,28 +1069,39 @@ contains
   !*****************************************************************
   subroutine  area_burnt ( currentSite, bc_in )
     !*****************************************************************
-    !currentPatch%AB    !daily area burnt (m2)
-    !currentPatch%NF    !Daily number of ignitions (lightning and human-caused), adjusted for size of patch. 
 
-    use EDParamsMod,   only : ED_val_nignitions
+    use EDParamsMod, only : ED_val_nignitions
+    use FatesConstantsMod, only : years_per_day, hours_per_day
 
     type(ed_site_type), intent(inout), target :: currentSite
     type(ed_patch_type), pointer :: currentPatch
     type(bc_in_type), intent(in) :: bc_in
 
-    real lb               !length to breadth ratio of fire ellipse
-    real df               !distance fire has travelled forward
-    real db               !distance fire has travelled backward
-    real patch_area_in_m2 !'actual' patch area as applied to whole grid cell
+    real lb               !length to breadth ratio of fire ellipse (unitless)
+    real df               !distance fire has travelled forward in m
+    real db               !distance fire has travelled backward in m
+    real NF               !number of lightning strikes per day per km2
+    real AB               !daily area burnt in m2 per km2
     real(r8) gridarea
     real(r8) size_of_fire !in m2
     real(r8),parameter :: km2_to_m2 = 1000000.0_r8 !area conversion for square km to square m 
 
     currentSite%frac_burnt = 0.0_r8
 
+    !NF = number of lighting strikes per day per km2
+    ! ED_val_nignitions is from the params file
+    ! lightning is the daily avg from a lightning dataset
+    if (index(stream_fldFileName_lightng, 'nofile') > 0) then
+       NF = ED_val_nignitions * years_per_day
+    else
+       NF = bc_in%lightning24 * hours_per_day  ! #/km2/hr to #/km2/day
+    end if
+
+    ! If there are 15  lightning strikes per year, per km2. (approx from NASA product for S.A.) 
+    ! then there are 15 * 1/365 strikes/km2 each day. 
+
     currentPatch => currentSite%oldest_patch;  
     do while(associated(currentPatch))
-       currentPatch%AB = 0.0_r8
        currentPatch%frac_burnt = 0.0_r8
        lb = 0.0_r8; db = 0.0_r8; df = 0.0_r8
 
@@ -1118,53 +1128,24 @@ contains
 
           ! --- calculate area burnt---
           if(lb > 0.0_r8) then
-             
-             ! INTERF-TODO:
-             ! THIS SHOULD HAVE THE COLUMN AND LU AREA WEIGHT ALSO, NO?
-
-             gridarea = km2_to_m2     ! 1M m2 in a km2
-             
-             ! NF = number of lighting strikes per day per km2
-             ! ED_val_nignitions is from the params file
-             ! lightning is the daily avg from a lightning dataset
-             if (index(stream_fldFileName_lightng, 'nofile') > 0) then
-                currentPatch%NF = ED_val_nignitions * currentPatch%area/area /365
-             else
-                currentPatch%NF = bc_in%lightning24 * 24._r8  ! #/km2/hr to #/km2/day
-             end if
-
-             ! If there are 15  lightening strickes per year, per km2. (approx from NASA product) 
-             ! then there are 15/365 s/km2 each day. 
      
              ! Equation 1 in Thonicke et al. 2010
              ! To Do: Connect here with the Li & Levis GDP fire suppression algorithm. 
              ! Equation 16 in arora and boer model JGR 2005
-             !currentPatch%AB = currentPatch%AB *3.0_r8
+             ! AB = AB *3.0_r8
 
              !size of fire = equation 14 Arora and Boer JGR 2005
              size_of_fire = ((3.1416_r8/(4.0_r8*lb))*((df+db)**2.0_r8))
 
-             !AB = daily area burnt = size fires in m2 * num ignitions * prob ignition starts fire
-             ! m2 per km2 per day
-             currentPatch%AB = size_of_fire * currentPatch%NF * currentSite%FDI
+             !AB = daily area burnt = size fires in m2 * num ignitions per day per km2 * prob ignition starts fire
+             !AB = m2 per km2 per day
+             AB = size_of_fire * NF * currentSite%FDI
              
-             patch_area_in_m2 = gridarea *currentPatch%area/area
+             currentPatch%frac_burnt = min(0.99_r8, AB / km2_to_m2)
              
-             currentPatch%frac_burnt = currentPatch%AB / patch_area_in_m2
              if(write_SF == itrue)then
                 if ( hlm_masterproc == itrue ) write(fates_log(),*) 'frac_burnt',currentPatch%frac_burnt
              endif
-
-             if (currentPatch%frac_burnt > 1.0_r8 ) then !all of patch burnt. 
-                
-                currentPatch%frac_burnt = 1.0_r8 ! capping at 1 same as %AB/patch_area_in_m2 
-
-                if ( hlm_masterproc == itrue ) write(fates_log(),*) 'burnt all of patch',currentPatch%patchno
-                if ( hlm_masterproc == itrue ) write(fates_log(),*) 'ros',currentPatch%ROS_front,currentPatch%FD, &
-                     currentPatch%NF,currentPatch%FI,size_of_fire
-
-             endif           
-
 
           endif
        endif! fire

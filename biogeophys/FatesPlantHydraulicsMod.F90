@@ -39,6 +39,7 @@ module FatesPlantHydraulicsMod
    use FatesConstantsMod, only : pi_const
    use FatesConstantsMod, only : cm2_per_m2
    use FatesConstantsMod, only : g_per_kg
+   use FatesConstantsMod, only : nearzero
 
    use EDParamsMod       , only : hydr_kmax_rsurf1
    use EDParamsMod       , only : hydr_kmax_rsurf2
@@ -931,7 +932,6 @@ contains
     !
     ! !USES:
     use FatesUtilsMod  , only : check_var_real
-    use EDTypesMod     , only : dump_cohort
     use EDTypesMod     , only : AREA
     
     ! !ARGUMENTS:
@@ -973,11 +973,6 @@ contains
                                   ccohort_hydr%v_aroot_layer_init(j)/ccohort_hydr%v_aroot_layer(j)
        ccohort_hydr%th_aroot(j) = constrain_water_contents(th_aroot_uncorr(j), small_theta_num, ft, 4)
        ccohort_hydr%errh2o_growturn_aroot(j) = ccohort_hydr%th_aroot(j) - th_aroot_uncorr(j)
-       !call check_var_real(ccohort_hydr%errh2o_growturn_aroot(j),'ccohort_hydr%errh2o_growturn_aroot(j)',err_code)
-       !if ((abs(ccohort_hydr%errh2o_growturn_aroot(j)) > 1.0_r8) .or. &
-       !     err_code == 1 .or. err_code == 10) then
-       !  call dump_cohort(cCohort)
-       !end if
     enddo
     
     ! Storing mass balance error
@@ -1428,7 +1423,6 @@ contains
      ! ----------------------------------------------------------------------------------
 
      use EDTypesMod, only : AREA
-     use EDTypesMod     , only : dump_cohort
 
      ! Arguments
      integer, intent(in)                       :: nsites
@@ -2264,8 +2258,7 @@ contains
      !s
      ! !USES:
      use EDTypesMod        , only : AREA
-    use FatesUtilsMod  , only : check_var_real
-    use EDTypesMod     , only : dump_cohort
+     use FatesUtilsMod  , only : check_var_real
 
      ! ARGUMENTS:
      ! -----------------------------------------------------------------------------------
@@ -2298,7 +2291,7 @@ contains
      real(r8), parameter :: small_theta_num = 1.e-7_r8  ! avoids theta values equalling thr or ths         [m3 m-3]
      
      ! hydraulics timestep adjustments for acceptable water balance error
-     integer  :: maxiter        = 1            ! maximum iterations for timestep reduction                       [-]
+     integer  :: maxiter        = 5            ! maximum iterations for timestep reduction                       [-]
      integer  :: imult          = 3            ! iteration index multiplier                                      [-]
      real(r8) :: we_area_outer                 ! 1D plant-soil continuum water error                             [kgh2o m-2 individual-1]
      
@@ -2482,13 +2475,17 @@ contains
            do while(associated(ccohort))
               ccohort_hydr => ccohort%co_hydr
               gscan_patch       = gscan_patch + ccohort%g_sb_laweight
-              if (gscan_patch < 0._r8) then
-                 write(fates_log(),*) 'ERROR: negative gscan_patch!'
-                 call endrun(msg=errMsg(sourcefile, __LINE__))
-              end if
               ccohort => ccohort%shorter
            enddo !cohort
            
+           ! The HLM predicted transpiration flux even though no leaves are present?
+           if(bc_in(s)%qflx_transp_pa(ifp) > 1.e-10_r8 .and. gscan_patch<nearzero)then
+               write(fates_log(),*) 'ERROR in plant hydraulics.'
+               write(fates_log(),*) 'The HLM predicted a non-zero total transpiration flux'
+               write(fates_log(),*) 'for this patch, yet there is no leaf-area-weighted conductance?'
+               call endrun(msg=errMsg(sourcefile, __LINE__))
+           end if
+
            ccohort=>cpatch%tallest
            do while(associated(ccohort))
               ccohort_hydr => ccohort%co_hydr
@@ -2500,18 +2497,21 @@ contains
               ccohort_hydr%rootuptake      = 0._r8
               
               ! Relative transpiration of this cohort from the whole patch
-!!              qflx_rel_tran_coh = ccohort%g_sb_laweight/gscan_patch
-
-              qflx_tran_veg_patch_coh      = bc_in(s)%qflx_transp_pa(ifp) * ccohort%g_sb_laweight/gscan_patch
-
-              qflx_tran_veg_indiv          = qflx_tran_veg_patch_coh * cpatch%area* &
-	                                     min(1.0_r8,cpatch%total_canopy_area/cpatch%area)/ccohort%n !AREA / ccohort%n
-              
               ! [mm H2O/cohort/s] = [mm H2O / patch / s] / [cohort/patch]
-!!              qflx_tran_veg_patch_coh      = qflx_trans_patch_vol * qflx_rel_tran_coh
 
-	      call updateWaterDepTreeHydProps(sites(s),ccohort,bc_in(s))
-		   
+              if(ccohort%g_sb_laweight>nearzero) then
+                  qflx_tran_veg_patch_coh = bc_in(s)%qflx_transp_pa(ifp) * ccohort%g_sb_laweight/gscan_patch
+                  
+                  qflx_tran_veg_indiv     = qflx_tran_veg_patch_coh * cpatch%area* &
+                        min(1.0_r8,cpatch%total_canopy_area/cpatch%area)/ccohort%n !AREA / ccohort%n
+              else
+                  qflx_tran_veg_patch_coh = 0._r8
+                  qflx_tran_veg_indiv     = 0._r8
+              end if
+
+
+              call updateWaterDepTreeHydProps(sites(s),ccohort,bc_in(s))
+       
               if(site_hydr%nlevsoi_hyd > 1) then
                  ! BUCKET APPROXIMATION OF THE SOIL-ROOT HYDRAULIC GRADIENT (weighted average across layers)
                  !call map2d_to_1d_shells(soilstate_inst, waterstate_inst, g, c, rs1(c,1), ccohort_hydr%l_aroot_layer*ccohort%n, &
@@ -3479,7 +3479,7 @@ contains
 	     end if
 	  end do
           if(catch_nan) then
-             write(fates_log(),*)'EDPlantHydraulics returns nan at k = ', char(index_nan)
+             write(fates_log(),*)'EDPlantHydraulics returns nan at k = ', index_nan
              call endrun(msg=errMsg(sourcefile, __LINE__))
 	  end if
 	  
