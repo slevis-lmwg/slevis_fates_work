@@ -1241,10 +1241,14 @@ contains
     !returns the updated currentCohort%fraction_crown_burned for each tree cohort within each patch.
     !currentCohort%fraction_crown_burned is the proportion of crown affected by fire
 
+    use SFParamsMod, only: SF_val_min_moisture, SF_val_mid_moisture, SF_val_low_moisture
+
     type(ed_site_type), intent(in), target :: currentSite
 
     type(ed_patch_type) , pointer :: currentPatch
     type(ed_cohort_type), pointer :: currentCohort
+
+    real(r8) :: moist           ! effective fuel moisture
 
     currentPatch => currentSite%oldest_patch
 
@@ -1267,9 +1271,43 @@ contains
                    if ((currentCohort%hite > 0.0_r8).and.(currentPatch%SH >=  &
                         (currentCohort%hite-currentCohort%hite*EDPftvarcon_inst%crown(currentCohort%pft)))) then 
 
-                           currentCohort%fraction_crown_burned =  (currentPatch%SH-currentCohort%hite*(1.0_r8- &
-                                EDPftvarcon_inst%crown(currentCohort%pft)))/(currentCohort%hite* &
-                                EDPftvarcon_inst%crown(currentCohort%pft)) 
+                      if (EDPftvarcon_inst%crown_fire(currentCohort%pft) > 0._r8) then
+                         ! This pft may experience crown fire
+
+                         ! I reduce fraction_crown_burned based on the
+                         ! moisture conditions. For now I use the
+                         ! moisture variable already calculated for live
+                         ! grasses: litter_moisture(lg_sf)
+                         ! I then use the algorithm found in
+                         ! subroutine ground_fuel_consumption to
+                         ! calculate fraction_crown_burned in the same
+                         ! way used in that subroutine to calculate
+                         ! burnt_frac_litter.
+                         moist = currentPatch%litter_moisture(lg_sf)
+                         ! 1. Very dry litter
+                         if (moist <= SF_val_min_moisture(lg_sf)) then
+                            currentCohort%fraction_crown_burned = 1.0_r8
+                         end if
+                         ! 2. Low to medium moistures
+                         if (moist > SF_val_min_moisture(lg_sf) .and. moist <= SF_val_mid_moisture(lg_sf)) then
+                            currentCohort%fraction_crown_burned = max(0.0_r8, min(1.0_r8, SF_val_low_moisture_Coeff(lg_sf) - SF_val_low_moisture_Slope(lg_sf) * moist))
+                         else
+                            ! For medium to high moistures.
+                            if (moist > SF_val_mid_moisture(lg_sf) .and. moist <= 1.0_r8) then
+                               currentCohort%fraction_crown_burned = max(0.0_r8, min(1.0_r8, SF_val_mid_moisture_Coeff(lg_sf) - SF_val_mid_moisture_Slope(lg_sf) * moist))
+                            end if
+                         end if
+                         ! Very wet litter
+                         if (moist >= 1.0_r8) then
+                            currentCohort%fraction_crown_burned = 0.0_r8
+                         endif
+
+                      else
+                         ! This pft may not experience crown fire
+                         currentCohort%fraction_crown_burned = (currentPatch%SH - currentCohort%hite * (1.0_r8 - &
+                            EDPftvarcon_inst%crown(currentCohort%pft))) / &
+                            (currentCohort%hite * EDPftvarcon_inst%crown(currentCohort%pft)) 
+                      end if  ! crown fire flag
 
                    else 
                       ! Flames over top of canopy. 
